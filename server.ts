@@ -7,9 +7,25 @@ import cors from "cors";
 import { createClient } from '@supabase/supabase-js';
 
 // Supabase Setup
-const supabaseUrl = process.env.SUPABASE_URL || '';
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
+const getSupabaseClient = () => {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  
+  if (!url || !key) {
+    return null;
+  }
+  
+  try {
+    // Ensure URL is valid
+    new URL(url);
+    return createClient(url, key);
+  } catch (e) {
+    console.error("Invalid Supabase URL:", url);
+    return null;
+  }
+};
+
+let supabaseInstance = getSupabaseClient();
 
 async function startServer() {
   const app = express();
@@ -27,22 +43,45 @@ async function startServer() {
 
   // Supabase Status check for Frontend
   app.get("/api/supabase-status", async (req, res) => {
+    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return res.json({ 
+        connected: false, 
+        error: "Thiếu biến môi trường SUPABASE_URL hoặc SUPABASE_SERVICE_ROLE_KEY. Vui lòng cấu hình trong AI Studio." 
+      });
+    }
+
+    if (!supabaseInstance) {
+      supabaseInstance = getSupabaseClient();
+    }
+
+    if (!supabaseInstance) {
+      return res.json({ connected: false, error: "URL Supabase không hợp lệ (phải bắt đầu bằng https://)" });
+    }
+
     try {
-      const { error } = await supabase.from('system_config').select('key').limit(1);
+      const { error } = await supabaseInstance.from('system_config').select('key').limit(1);
       if (error) throw error;
       res.json({ connected: true, error: null });
     } catch (err: any) {
-      res.json({ connected: false, error: err.message || 'Unknown error' });
+      console.error("Supabase connection error:", err);
+      res.json({ connected: false, error: err.message || 'Lỗi kết nối Supabase' });
     }
   });
 
   // API Routes
   app.get("/api/data", async (req, res) => {
     try {
-      const { data: users } = await supabase.from('users').select('*');
-      const { data: loans } = await supabase.from('loans').select('*');
-      const { data: notifications } = await supabase.from('notifications').select('*');
-      const { data: config } = await supabase.from('system_config').select('*');
+      if (!supabaseInstance) supabaseInstance = getSupabaseClient();
+      if (!supabaseInstance) throw new Error("Supabase client not initialized. Check your environment variables.");
+
+      const { data: users, error: uErr } = await supabaseInstance.from('users').select('*');
+      if (uErr) throw uErr;
+      const { data: loans, error: lErr } = await supabaseInstance.from('loans').select('*');
+      if (lErr) throw lErr;
+      const { data: notifications, error: nErr } = await supabaseInstance.from('notifications').select('*');
+      if (nErr) throw nErr;
+      const { data: config, error: cErr } = await supabaseInstance.from('system_config').select('*');
+      if (cErr) throw cErr;
 
       const budget = config?.find(c => c.key === 'budget')?.value || 30000000;
       const rankProfit = config?.find(c => c.key === 'rankProfit')?.value || 0;
@@ -126,7 +165,7 @@ async function startServer() {
           bank_account_holder: u.bankAccountHolder,
           updated_at: u.updatedAt || Date.now()
         };
-        await supabase.from('users').upsert(dbUser);
+        await supabaseInstance.from('users').upsert(dbUser);
       }
       res.json({ success: true });
     } catch (e: any) {
@@ -152,7 +191,7 @@ async function startServer() {
           rejection_reason: l.rejectionReason,
           updated_at: l.updatedAt || Date.now()
         };
-        await supabase.from('loans').upsert(dbLoan);
+        await supabaseInstance.from('loans').upsert(dbLoan);
       }
       res.json({ success: true });
     } catch (e: any) {
@@ -173,7 +212,7 @@ async function startServer() {
           read: n.read,
           type: n.type
         };
-        await supabase.from('notifications').upsert(dbNotif);
+        await supabaseInstance.from('notifications').upsert(dbNotif);
       }
       res.json({ success: true });
     } catch (e: any) {
@@ -183,7 +222,7 @@ async function startServer() {
 
   app.post("/api/budget", async (req, res) => {
     try {
-      await supabase.from('system_config').upsert({ key: 'budget', value: req.body.budget });
+      await supabaseInstance.from('system_config').upsert({ key: 'budget', value: req.body.budget });
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -192,7 +231,7 @@ async function startServer() {
 
   app.post("/api/rankProfit", async (req, res) => {
     try {
-      await supabase.from('system_config').upsert({ key: 'rankProfit', value: req.body.rankProfit });
+      await supabaseInstance.from('system_config').upsert({ key: 'rankProfit', value: req.body.rankProfit });
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -202,7 +241,7 @@ async function startServer() {
   app.delete("/api/users/:id", async (req, res) => {
     try {
       const userId = req.params.id;
-      await supabase.from('users').delete().eq('id', userId);
+      await supabaseInstance.from('users').delete().eq('id', userId);
       // Cascading delete should handle loans and notifications if set up in SQL
       res.json({ success: true });
     } catch (e: any) {
